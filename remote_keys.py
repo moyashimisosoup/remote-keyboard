@@ -264,6 +264,15 @@ def create_handler(state):
             path = urlsplit(self.path).path
             if path not in ('/api/pair', '/api/control', '/api/input'):
                 return self.reply(404, {'error': 'Not found.'})
+            # Drain bounded request bodies before sending early rejections.
+            # Windows can reset a socket closed with unread incoming data.
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if length < 1 or length > MAX_JSON_BYTES:
+                    return self.reply(413, {'error': 'Invalid payload size.'})
+                raw = self.rfile.read(length)
+            except ValueError:
+                return self.reply(400, {'error': 'Invalid payload size.'})
             origin = self.headers.get('Origin', '')
             host = self.headers.get('Host', '')
             if (not origin or not host or urlsplit(origin).netloc.lower() != host.lower()
@@ -273,10 +282,7 @@ def create_handler(state):
             if not self.headers.get('Content-Type', '').startswith('application/json'):
                 return self.reply(415, {'error': 'JSON required.'})
             try:
-                length = int(self.headers.get('Content-Length', '0'))
-                if length < 1 or length > MAX_JSON_BYTES:
-                    return self.reply(413, {'error': 'Invalid payload size.'})
-                payload = json.loads(self.rfile.read(length))
+                payload = json.loads(raw)
                 if not isinstance(payload, dict):
                     raise ValueError('Not a JSON object.')
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError):

@@ -10,15 +10,19 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - name: Check Python syntax
-        run: python3 -m py_compile remote_keys.py
+        run: python -m py_compile remote_keys.py
       - name: Run protocol tests
-        run: python3 -m unittest discover -s tests -v
+        run: python -m unittest discover -s tests -v
       - name: Check browser JavaScript syntax
         run: node --check app.js
       - name: Check essential files
+        shell: bash
         run: test -s index.html && test -s style.css && test -s start-windows.cmd
