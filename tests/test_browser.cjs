@@ -25,7 +25,7 @@ function harness() {
     document:{documentElement:root,body:element(),getElementById:get, createElement:element,
       querySelectorAll(selector) {
         if (selector === '[data-key]') return keys;
-        return [...keys, ...get('presetList').children.map(row => row.children[0])];
+        return [...keys, ...get('presetList').children];
       }},
     localStorage:{getItem:key=>store.get(key) || null, setItem:(key,value)=>store.set(key,value)},
     crypto:require('node:crypto').webcrypto, Uint8Array,
@@ -73,7 +73,7 @@ test('preset registration is local; sending does not append Enter and is blocked
   const h=harness(); await h.settle();
   h.get('presetName').value='確認'; h.get('presetType').value='text'; h.get('presetText').value='git status';
   await h.fire('presetForm','submit'); assert.equal(h.packets.length,0); assert.equal(h.store.size,1);
-  const button=h.get('presetList').children[0].children[0];
+  const button=h.get('presetList').children[0];
   await button.listeners.click(); await h.settle();
   assert.equal(h.packets.length,1); assert.equal(h.packets[0].text,'git status'); assert.equal(h.packets[0].erase,0);
   h.state.enabled=false; await h.run('refresh()');

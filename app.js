@@ -57,6 +57,8 @@ function recordAccepted(packet) {
 }
 function drawPresets() {
   $('presetList').replaceChildren();
+  $('presetManageList').replaceChildren();
+  $('presetList').hidden = presets.length === 0;
   presets.forEach((preset, index) => {
     const row = document.createElement('div'); row.className = 'preset-row';
     const send = document.createElement('button');
@@ -64,13 +66,18 @@ function drawPresets() {
     send.title = preset.type === 'key' ? preset.value : '登録した文字を送信';
     send.dataset.presetSend = '1';
     send.addEventListener('click', () => sendQuick(preset));
+    send.addEventListener('pointerdown', ev => {
+      if (document.activeElement === editor) ev.preventDefault();
+    });
+    $('presetList').append(send);
+    const name = document.createElement('span'); name.textContent = preset.name;
     const remove = document.createElement('button');
     remove.textContent = '登録解除'; remove.className = 'subtle';
     remove.addEventListener('click', () => {
       const next = presets.filter((_, i) => i !== index);
       if (savePresets(next)) { presets = next; drawPresets(); paint(); }
     });
-    row.append(send, remove); $('presetList').append(row);
+    row.append(name, remove); $('presetManageList').append(row);
   });
 }
 function savePresets(next) {

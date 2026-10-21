@@ -28,6 +28,7 @@
         <div class="line"><div><p class="overline">INPUT</p><h2>文字を入力</h2></div><button id="toggle" type="button" class="primary compact">入力を開始</button></div>
         <div class="clear-row"><button type="button" id="clear">入力欄だけクリア</button><span id="count">0 / 750</span></div>
         <div class="keys"><button type="button" data-key="Enter">Enter ↵</button><button type="button" data-key="Backspace">PCで削除 ⌫</button><button type="button" data-key="Tab">Tab ↹</button><button type="button" data-key="Escape">Esc</button></div>
+        <div id="presetList" class="preset-shortcuts" role="group" aria-label="登録したショートカット"></div>
       </div>
       <div class="editorwrap"><textarea id="editor" placeholder="タップしてiPhoneのキーボードで入力" maxlength="750" rows="3" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea></div>
       <p class="hint input-hint">日本語は変換確定後に送信。入力欄の削除はPCにも送ります。</p>
@@ -40,7 +41,7 @@
     </section>
     <section class="panel" id="presetsPanel" hidden>
       <p class="overline">QUICK INPUT</p><h2>定型文・キー登録</h2>
-      <div id="presetList" class="preset-list"></div>
+      <div id="presetManageList" class="preset-list"></div>
       <details><summary>新しく登録する</summary>
         <form id="presetForm">
           <label for="presetName">ボタンの名前</label><input id="presetName" maxlength="30" required placeholder="例：よく使うコマンド">
