@@ -1,18 +1,15 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo Remote Keyboard v0.1
-where py >nul 2>nul
-if %errorlevel%==0 (
-    py -3 remote_keys.py
-) else (
-    where python >nul 2>nul
-    if %errorlevel%==0 (
-        python remote_keys.py
-    ) else (
-        echo Python 3 not found. Install Python 3, then try again.
-    )
+where pyw >nul 2>nul
+if not errorlevel 1 (
+    start "" pyw -3 desktop_app.py
+    exit /b
 )
-echo.
-echo Receiver stopped. Press any key to close.
-pause >nul
+where pythonw >nul 2>nul
+if not errorlevel 1 (
+    start "" pythonw desktop_app.py
+    exit /b
+)
+echo Python 3 with Tkinter was not found. Install official Python 3, then try again.
+pause

@@ -29,6 +29,7 @@ MAX_JSON_BYTES = 8192
 ARM_TIMEOUT = 35
 PIN_LIFETIME = 30 * 60
 SESSION_LIFETIME = 12 * 3600
+CONNECTION_FRESHNESS = 20
 
 
 class WindowsKeyboard:
@@ -109,6 +110,17 @@ class WindowsKeyboard:
             self.key('Backspace')
 
 
+def peer_kind(user_agent):
+    """Keep only a coarse device kind, never a raw header or device name."""
+    if 'iPhone' in user_agent:
+        return 'iPhone'
+    if 'iPad' in user_agent or ('Macintosh' in user_agent and 'Mobile' in user_agent):
+        return 'iPad'
+    if 'Android' in user_agent:
+        return 'Android'
+    return 'ブラウザ'
+
+
 class State:
     def __init__(self, keyboard):
         self.keyboard = keyboard
@@ -121,6 +133,8 @@ class State:
         self.session_until = 0.0
         self.armed_until = 0.0
         self.seen = OrderedDict()
+        self.peer_label = 'ブラウザ'
+        self.last_seen = float('-inf')
 
     def authenticated(self, token):
         return bool(token and self.session and
@@ -130,7 +144,7 @@ class State:
     def armed(self, token):
         return self.authenticated(token) and time.monotonic() < self.armed_until
 
-    def pair(self, supplied):
+    def pair(self, supplied, user_agent=''):
         now = time.monotonic()
         if now < self.locked_until:
             return None, 'Too many attempts. Try again later.'
@@ -145,6 +159,8 @@ class State:
         self.failed = 0
         self.session = secrets.token_urlsafe(32)
         self.session_until = now + SESSION_LIFETIME
+        self.peer_label = peer_kind(user_agent)
+        self.last_seen = now
         self.armed_until = 0.0
         self.seen.clear()
         return self.session, None
@@ -152,17 +168,32 @@ class State:
     def set_armed(self, token, enabled):
         if not self.authenticated(token):
             return False
-        self.armed_until = time.monotonic() + ARM_TIMEOUT if enabled else 0.0
+        self.last_seen = time.monotonic()
+        self.armed_until = self.last_seen + ARM_TIMEOUT if enabled else 0.0
         return True
 
     def heartbeat(self, token):
+        if self.authenticated(token):
+            self.last_seen = time.monotonic()
         if self.armed(token):
             self.armed_until = time.monotonic() + ARM_TIMEOUT
+
+    def panel_status(self):
+        """Read desktop indicators without extending any authorization timeout."""
+        with self.lock:
+            now = time.monotonic()
+            paired = bool(self.session and now < self.session_until)
+            connected = paired and now - self.last_seen < CONNECTION_FRESHNESS
+            return {'pin_expired': now - self.pin_born > PIN_LIFETIME,
+                    'paired': paired, 'connected': connected,
+                    'receiving': connected and now < self.armed_until,
+                    'peer': self.peer_label}
 
     def apply(self, token, payload):
         """Return (HTTP code, result). Lock must be held externally."""
         if not self.authenticated(token):
             return 401, {'error': 'Please pair again.'}
+        self.last_seen = time.monotonic()
         if not self.armed(token):
             return 409, {'error': 'Input is paused. Tap Start first.'}
         event_id = payload.get('id')
@@ -248,6 +279,7 @@ def create_handler(state):
                 return self.reply(200, {'paired': paired, 'enabled': enabled})
             files = {'/': ('index.html', 'text/html; charset=utf-8'),
                      '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                     '/cat.svg': ('cat.svg', 'image/svg+xml'),
                      '/style.css': ('style.css', 'text/css; charset=utf-8')}
             if path not in files:
                 return self.reply(404, {'error': 'Not found.'})
@@ -264,6 +296,15 @@ def create_handler(state):
             path = urlsplit(self.path).path
             if path not in ('/api/pair', '/api/control', '/api/input'):
                 return self.reply(404, {'error': 'Not found.'})
+            # Drain bounded request bodies before sending early rejections.
+            # Windows can reset a socket closed with unread incoming data.
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if length < 1 or length > MAX_JSON_BYTES:
+                    return self.reply(413, {'error': 'Invalid payload size.'})
+                raw = self.rfile.read(length)
+            except ValueError:
+                return self.reply(400, {'error': 'Invalid payload size.'})
             origin = self.headers.get('Origin', '')
             host = self.headers.get('Host', '')
             if (not origin or not host or urlsplit(origin).netloc.lower() != host.lower()
@@ -273,10 +314,7 @@ def create_handler(state):
             if not self.headers.get('Content-Type', '').startswith('application/json'):
                 return self.reply(415, {'error': 'JSON required.'})
             try:
-                length = int(self.headers.get('Content-Length', '0'))
-                if length < 1 or length > MAX_JSON_BYTES:
-                    return self.reply(413, {'error': 'Invalid payload size.'})
-                payload = json.loads(self.rfile.read(length))
+                payload = json.loads(raw)
                 if not isinstance(payload, dict):
                     raise ValueError('Not a JSON object.')
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
@@ -284,7 +322,7 @@ def create_handler(state):
 
             if path == '/api/pair':
                 with state.lock:
-                    token, error = state.pair(payload.get('code'))
+                    token, error = state.pair(payload.get('code'), self.headers.get('User-Agent', ''))
                 if error:
                     return self.reply(403, {'error': error})
                 cookie = f'rk_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_LIFETIME}'

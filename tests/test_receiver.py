@@ -38,7 +38,7 @@ class TestProtocol(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def query(self, method, path, data=None, cookie=None, origin=None, remote_header=True):
+    def query(self, method, path, data=None, cookie=None, origin=None, remote_header=True, user_agent=None):
         conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
         headers = {'Host': '127.0.0.1:' + str(self.server.server_port)}
         if data is not None:
@@ -48,6 +48,8 @@ class TestProtocol(unittest.TestCase):
             headers['Origin'] = origin
             if remote_header:
                 headers['X-Remote-Keyboard'] = '1'
+        if user_agent:
+            headers['User-Agent'] = user_agent
         if cookie:
             headers['Cookie'] = cookie
         conn.request(method, path, body=json.dumps(data) if data is not None else None, headers=headers)
@@ -72,6 +74,17 @@ class TestProtocol(unittest.TestCase):
         code, body, _ = self.query('GET', '/api/status', cookie=session)
         self.assertTrue(body['paired'])
         self.assertTrue(body['enabled'])
+
+    def test_pairing_records_only_a_generic_device_label(self):
+        code, _, cookie = self.query('POST','/api/pair',{'code':self.state.pin},
+                                     user_agent='Test iPhone browser')
+        self.assertEqual(code,200)
+        self.assertEqual(self.state.panel_status()['peer'],'iPhone')
+        session=cookie.split(';')[0]
+        code, body, _=self.query('GET','/api/status',cookie=session)
+        self.assertEqual(code,200)
+        self.assertTrue(body['paired'])
+        self.assertTrue(self.state.panel_status()['connected'])
 
     def test_duplicate_id_exactly_once(self):
         session = self.authenticate()

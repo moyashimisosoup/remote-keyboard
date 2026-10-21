@@ -6,6 +6,140 @@ const badge = $('badge'), message = $('message'), toggle = $('toggle');
 let paired = false, enabled = false, composing = false;
 let confirmed = '', pending = null, stopped = false, manualReview = false;
 let sequence = Promise.resolve();
+let quickSending = false;
+let settlingInput = false, inputTimer = null, inputSettled = Promise.resolve(), settleInput = null;
+function holdInputCommit() {
+  clearTimeout(inputTimer);
+  if (!settlingInput) {
+    settlingInput = true;
+    inputSettled = new Promise(resolve => { settleInput = resolve; });
+  }
+}
+function cancelInputCommit() {
+  clearTimeout(inputTimer);
+  settlingInput = false; composing = false;
+  const done = settleInput; settleInput = null;
+  if (done) done();
+}
+function scheduleInputFlush() {
+  holdInputCommit();
+  // Coalesce compositionend and Safari's following final input update.
+  inputTimer = setTimeout(() => {
+    if (composing) return;
+    settlingInput = false;
+    const done = settleInput; settleInput = null;
+    if (done) done();
+    queueFlush();
+  }, 80);
+}
+async function waitForInputCommit() {
+  while (settlingInput) await inputSettled;
+}
+const sentRecords = [];
+const PRESET_STORAGE = 'remote-keyboard.presets.v1';
+const allowedKeys = ['Enter', 'Backspace', 'Tab', 'Escape'];
+let presets = [];
+try {
+  const saved = JSON.parse(localStorage.getItem(PRESET_STORAGE) || '[]');
+  if (Array.isArray(saved)) presets = saved.filter(validPreset).slice(0, 20);
+} catch { /* Storage can be unavailable in private browsing. */ }
+function validPreset(p) {
+  return p && typeof p.name === 'string' && p.name.trim().length > 0 && p.name.length <= 30 &&
+    ((p.type === 'text' && typeof p.value === 'string' && p.value.length > 0 && p.value.length <= 750 && !/[\x00-\x09\x0b-\x1f\x7f]/.test(p.value)) ||
+     (p.type === 'key' && allowedKeys.includes(p.value)));
+}
+function drawHistory() {
+  $('historyEmpty').hidden = sentRecords.length > 0;
+  $('sentHistory').replaceChildren();
+  for (const record of sentRecords) {
+    const row = document.createElement('li');
+    row.className = record.kind;
+    row.textContent = record.value;
+    $('sentHistory').append(row);
+  }
+}
+function recordAccepted(packet) {
+  if (packet.action === 'edit') {
+    if (packet.erase) sentRecords.push({kind:'operation', value:'PCで削除 × ' + packet.erase});
+    if (packet.text) {
+      const last = sentRecords[sentRecords.length - 1];
+      if (!packet.standalone && last && last.kind === 'text' && last.value.length + packet.text.length <= 3000) last.value += packet.text;
+      else sentRecords.push({kind:packet.standalone ? 'preset' : 'text', value:packet.text});
+    }
+    if (typeof packet.target === 'string') confirmed = packet.target;
+  } else {
+    sentRecords.push({kind:'operation', value:packet.key === 'Backspace' ? 'PCで削除 × 1' : packet.key + ' を送信'});
+  }
+  sentRecords.splice(0, Math.max(0, sentRecords.length - 40));
+  if (packet.resetEditor) {
+    const base = packet.resetBase || '';
+    if (editor.value.startsWith(base)) {
+      // Keep characters typed while the quick action was awaiting its reply.
+      editor.value = editor.value.slice(base.length); confirmed = '';
+    } else {
+      confirmed = editor.value; stopped = true;
+      info('キー送信中に入力欄が編集されました。PCを確認し、入力を停止・再開してから入力欄だけクリアしてください。', true);
+    }
+  }
+  drawHistory();
+}
+function drawPresets() {
+  $('presetList').replaceChildren();
+  $('presetManageList').replaceChildren();
+  $('presetList').hidden = presets.length === 0;
+  presets.forEach((preset, index) => {
+    const row = document.createElement('div'); row.className = 'preset-row';
+    const send = document.createElement('button');
+    send.textContent = preset.name;
+    send.title = preset.type === 'key' ? preset.value : '登録した文字を送信';
+    send.dataset.presetSend = '1';
+    send.addEventListener('click', () => sendQuick(preset));
+    send.addEventListener('pointerdown', ev => {
+      if (document.activeElement === editor) ev.preventDefault();
+    });
+    $('presetList').append(send);
+    const name = document.createElement('span'); name.textContent = preset.name;
+    const remove = document.createElement('button');
+    remove.textContent = '登録解除'; remove.className = 'subtle';
+    remove.addEventListener('click', () => {
+      const next = presets.filter((_, i) => i !== index);
+      if (savePresets(next)) { presets = next; drawPresets(); paint(); }
+    });
+    row.append(name, remove); $('presetManageList').append(row);
+  });
+}
+function savePresets(next) {
+  try { localStorage.setItem(PRESET_STORAGE, JSON.stringify(next)); return true; }
+  catch { info('ブラウザに保存できません。保存領域やプライベートブラウズ設定を確認してください。', true); return false; }
+}
+function sendQuick(preset) {
+  return enqueue(async () => {
+    if (!enabled || composing || stopped || !paired) return;
+    quickSending = true; paint();
+    try {
+      await waitForInputCommit();
+      if (!enabled || stopped || !paired || composing) return;
+      if (preset.type === 'text' && (pending || editor.value !== confirmed)) {
+        info('入力欄の文章が送信完了してから、定型文をもう一度押してください。定型文は単独で送ります。', true);
+        return;
+      }
+      if (preset.type === 'key') do {
+        await waitForInputCommit();
+        if (!enabled || stopped || !paired || composing) return;
+        await flush();
+        if (pending || !enabled || stopped || composing) return;
+      } while (editor.value !== confirmed);
+      const request = preset.type === 'key'
+        ? {id:randomId(), action:'key', key:preset.value, resetEditor:true, resetBase:editor.value}
+        : {id:randomId(), action:'edit', erase:0, text:preset.value, standalone:true, resetEditor:true, resetBase:editor.value};
+      pending = request;
+      await api('/api/input', request);
+      await waitForInputCommit();
+      recordAccepted(request); pending = null;
+      if (!stopped) info('送信しました。続けて新しい文章を入力できます。');
+    } finally { quickSending = false; paint(); }
+  });
+}
 
 function randomId() {
   if (globalThis.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -20,12 +154,14 @@ function info(msg, isError = false) {
 function paint() {
   pairPanel.hidden = paired;
   keyboardPanel.hidden = !paired;
+  $('historyPanel').hidden = !paired;
+  $('presetsPanel').hidden = !paired;
   badge.textContent = !paired ? '未接続' : enabled ? '入力中' : '一時停止';
   badge.className = 'badge ' + (enabled ? 'on' : paired ? 'off' : '');
   toggle.textContent = enabled ? '入力を停止' : '入力を開始';
   toggle.classList.toggle('active', enabled);
   editor.disabled = !enabled || stopped;
-  document.querySelectorAll('[data-key]').forEach(b => b.disabled = !enabled || stopped);
+  document.querySelectorAll('[data-key], [data-preset-send]').forEach(b => b.disabled = !enabled || stopped || quickSending || composing);
   $('retryWrap').hidden = !stopped || !pending;
   $('retry').textContent = manualReview ? 'PCを確認し、入力状態を再同期' : '同じ操作IDで再確認';
   $('count').textContent = Array.from(editor.value).length + ' / 750';
@@ -67,7 +203,7 @@ function difference(before, after) {
   return {erase:b.length-prefix, text:a.slice(prefix).join('')};
 }
 async function flush() {
-  if (composing || !enabled || stopped || !paired) return;
+  if (composing || settlingInput || !enabled || stopped || !paired) return;
   if (!pending && editor.value !== confirmed) {
     const target = editor.value;
     pending = {id:randomId(), action:'edit', ...difference(confirmed, target), target};
@@ -75,7 +211,7 @@ async function flush() {
   if (!pending) return;
   const submitted = pending;
   await api('/api/input', submitted);
-  confirmed = submitted.target;
+  recordAccepted(submitted);
   if (pending === submitted) pending = null;
   info('Windowsに送信しました');
   paint();
@@ -87,6 +223,7 @@ async function refresh() {
     const previous = paired;
     paired = data.paired;
     enabled = data.enabled;
+    if (!paired || !enabled) cancelInputCommit();
     if (!paired && previous) {
       if (pending) {
         stopped = true; manualReview = true;
@@ -99,7 +236,7 @@ async function refresh() {
     if (!previous && paired) info('接続しました。入力を開始してください。');
     paint();
   } catch (e) {
-    enabled = false;
+    enabled = false; cancelInputCommit();
     info('PCと通信できません。Tailscaleと受信アプリを確認してください。', true);
     paint();
   }
@@ -118,7 +255,7 @@ $('pairForm').addEventListener('submit', async e => {
 toggle.addEventListener('click', async () => {
   try {
     if (enabled) {
-      enabled = false;
+      enabled = false; cancelInputCommit();
       paint();
       await api('/api/control', {enabled:false});
       info('入力を停止しました。');
@@ -136,37 +273,46 @@ toggle.addEventListener('click', async () => {
     }
   } catch (err) { info(err.message, true); await refresh(); }
 });
-editor.addEventListener('compositionstart', () => { composing = true; });
+editor.addEventListener('compositionstart', () => { composing = true; holdInputCommit(); paint(); });
 editor.addEventListener('compositionend', () => {
-  composing = false;
-  // iOS Safari may send the final input event just after compositionend.
-  setTimeout(queueFlush, 55);
+  composing = false; paint();
+  scheduleInputFlush();
 });
 editor.addEventListener('input', ev => {
   $('count').textContent = Array.from(editor.value).length + ' / 750';
-  if (!composing && !ev.isComposing) queueFlush();
+  if (!composing && !ev.isComposing) scheduleInputFlush();
 });
 $('clear').addEventListener('click', () => {
-  if (pending || stopped) { info('未確認の操作があるため、再送後にクリアしてください。', true); return; }
-  editor.value = '';
-  confirmed = '';
-  info('スマホ側の入力欄だけクリアしました。PCの文字は消していません。');
-  paint();
+  if (composing || settlingInput || quickSending || pending || stopped || editor.value !== confirmed) {
+    info('変換・送信が完了してから入力欄をクリアしてください。', true); return;
+  }
+  editor.value = ''; confirmed = '';
+  info('入力欄だけクリアしました。PCの文字と送信記録は残っています。'); paint();
+});
+$('clearHistory').addEventListener('click', () => {
+  sentRecords.length = 0; drawHistory();
+  info('iPhone側の送信記録だけ消しました。PCにはキーを送っていません。');
 });
 for (const button of document.querySelectorAll('[data-key]')) {
-  button.addEventListener('click', () => enqueue(async () => {
-    if (!enabled || composing || stopped) return;
-    await flush();
-    if (pending) return;
-    const key = button.dataset.key;
-    const request = {id:randomId(), action:'key', key};
-    pending = request;
-    await api('/api/input', request);
-    pending = null;
-    info(key + ' を送信しました。');
-    paint();
-  }));
+  button.addEventListener('click', () => sendQuick({type:'key', value:button.dataset.key}));
 }
+$('presetType').addEventListener('change', () => {
+  const key = $('presetType').value === 'key';
+  $('presetTextWrap').hidden = key; $('presetKeyWrap').hidden = !key;
+});
+$('presetForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const preset = {name:$('presetName').value.trim(), type:$('presetType').value,
+    value:$('presetType').value === 'key' ? $('presetKey').value : $('presetText').value};
+  if (!validPreset(preset) || presets.length >= 20) {
+    info('名前と内容を確認してください。登録は20件までです。', true); return;
+  }
+  const next = [...presets, preset];
+  if (!savePresets(next)) return;
+  presets = next; drawPresets(); paint();
+  $('presetName').value = ''; $('presetText').value = '';
+  info('このブラウザに登録しました。送信するには登録したボタンを押してください。');
+});
 $('retry').addEventListener('click', async () => {
   if (!pending) return;
   try {
@@ -188,7 +334,7 @@ $('retry').addEventListener('click', async () => {
     }
     const packet = pending;
     await api('/api/input', packet);
-    if (packet.action === 'edit') confirmed = packet.target;
+    recordAccepted(packet);
     pending = null;
     stopped = false;
     info('操作が確認できました。入力を再開できます。');
@@ -199,5 +345,37 @@ $('retry').addEventListener('click', async () => {
     paint();
   }
 });
+drawPresets(); drawHistory();
 refresh();
 setInterval(refresh, 5000);
+
+
+const themes = ['mint', 'night', 'peach', 'gameboy'];
+let chosenTheme = 'mint';
+try { const saved = localStorage.getItem('remote-keyboard.theme'); if (themes.includes(saved)) chosenTheme = saved; } catch {}
+document.documentElement.dataset.theme = chosenTheme;
+$('theme').value = chosenTheme;
+$('theme').addEventListener('change', () => {
+  const value = $('theme').value;
+  if (!themes.includes(value)) return;
+  document.documentElement.dataset.theme = value;
+  try { localStorage.setItem('remote-keyboard.theme', value); } catch {}
+});
+// Safari's visible viewport shrinks when the software keyboard opens.
+function fitKeyboardViewport() {
+  if (!window.visualViewport) return;
+  const view = window.visualViewport;
+  document.documentElement.style.setProperty('--visible-height', view.height + 'px');
+  document.body.classList.toggle('keyboard-open', window.innerHeight - view.height > 120);
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', fitKeyboardViewport);
+  window.visualViewport.addEventListener('scroll', fitKeyboardViewport);
+  fitKeyboardViewport();
+}
+// Keep Safari's keyboard open when tapping a quick key or clear.
+for (const button of document.querySelectorAll('[data-key], #clear')) {
+  button.addEventListener('pointerdown', ev => {
+    if (document.activeElement === editor) ev.preventDefault();
+  });
+}
