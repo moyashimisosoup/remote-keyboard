@@ -1,75 +1,52 @@
 # Remote Keyboard
 
-**iPhoneの標準日本語キーボードから、自宅のWindows PCへ文字入力する軽量Webアプリ。**
+iPhone Safariの日本語キーボードから、Tailscale経由でWindowsの選択中アプリへ文字を送る軽量アプリです。公開しているのはソースコードのみ。GitHub Pages、Funnel、ポート開放は使いません。
 
-公開しているのはソースコードです。PC側の受信サーバーはローカルホストのみに待ち受け、**Tailscale ServeによるTailnet内HTTPS接続**でiPhoneから利用します。第三者が開ける公開キーボードではありません。GitHub Pagesやクラウドサーバーは不要です。
+## Windowsで起動
 
-> v0.1 試作。HTTP受信・認証・重複送信防止の自動テストは実施済み。実際のiPhone Safari → Windowsメモ帳の入力は未検証です。
+1. Python 3（Tkinter付きの公式配布版）とTailscaleを用意します。追加のPythonパッケージは不要です。
+2. `start-windows.cmd` をダブルクリックします。小さなネコのパネルが開き、最初は **STOPPED** です。
+3. **START** でlocalhost限定の受信を開始し、ドット表示の6桁PINを発行します。PINは30分有効です。
+4. **STOP** で受信ポートを閉じ、PINと既存セッションを無効にします。パネル自体は残ります。再START後は再ペアリングしてください。
+5. ネコのある上部をドラッグするとパネルを移動できます。×はトレイへ格納します。トレイのネコをクリックすると再表示、右クリックで表示・START・STOP・終了を選べます。トレイに入れられない場合はタスクバーへ最小化します。
 
-## 初めて使う場合
+OS起動時の自動起動は設定しません。旧来のコンソール版 `python remote_keys.py` も残っていますが、同じポートなのでミニパネルの受信と同時起動はできません。
 
-### 1. Windows PCで準備
+## TailscaleとiPhone
 
-- [このリポジトリのZIP](https://github.com/moyashimisosoup/remote-keyboard/archive/refs/heads/main.zip) をWindows PCでダウンロードして解凍します。
-- [Python 3](https://www.python.org/downloads/windows/) と [Tailscale](https://tailscale.com/download/windows) が必要です。Python追加パッケージは必要ありません。
-- 解凍したフォルダの `start-windows.cmd` をダブルクリック。黒い画面に出る **6桁の Pairing PIN** を確認します。PINは30分有効。停止はウィンドウを閉じるか Ctrl+C です。
-- 同じPCのブラウザで `http://127.0.0.1:8787` を開ければ受信プログラムが起動しています。
+先に `tailscale status` と `tailscale serve status` で既存設定を確認してください。既存のServe設定は上書きしません。競合がないHTTPSポートで `tailscale serve --bg --https=443 http://127.0.0.1:8787` を使えます。今回追加した443だけを解除する場合は `tailscale serve --https=443 off`。他のサービスを残すため `serve reset` は使いません。
 
-### 2. PCでTailscale Serveを起動
+1. iPhoneで同じTailnetに接続し、SafariでTailscale Serveが表示するTailnet内HTTPSアドレスを開きます。
+2. デスクトップのSTART後に表示されるPINで「接続」。Windowsでは空白のメモ帳など、入力先を選びます。
+3. iPhoneの「入力を開始」で文字を送れます。日本語はIME確定後に送信します。終了時は「入力を停止」。デスクトップのSTOPはさらに受信サーバー自体を止めます。
 
-別のPowerShellで、先に既存のServe設定を確認します。
+入力先はWindowsで現在フォーカスしているアプリです。PCの画面・文章・カーソル位置は取得しません。ロック画面や管理者権限アプリは対象外です。
 
-```powershell
-tailscale status
-tailscale serve status
-```
+## iPhoneの操作
 
-**既にServeがある場合は設定を上書きしないでください。** 競合がなければ以下を実行します。
+- **入力欄だけクリア**：上部に配置。PCには削除キーを送らず、新しい文章を始めます。未確定変換・送信中はクリアしません。
+- **Enter / PCで削除 / Tab / Esc**：入力欄より上にまとめました。ソフトウェアキーボードが開くと上部を縮め、入力欄の高さを可視領域に合わせます。iOSのバージョンや画面サイズによる違いは実機で確認してください。
+- **テーマ**：MINT / NIGHT / PEACH / GAME BOY。テーマはそのブラウザ内へ保存します。
+- **送信記録**：成功応答を受けた文字とキー操作を最大40項目表示。PCの現在の文章を再現するものではありません。削除は操作として残り、以前に送った文字は記録から消えません。記録はページのメモリ内だけに置き、「記録だけ消す」はPCにキーを送りません。
+- **定型文・キー登録**：名前と、文字列または対応4キーから登録。最大20件、文字列は750文字まで。登録だけでは送信せず、「入力を開始」後にボタンを押して送ります。Enterは自動追加しませんが、文字列に含めた改行はそのまま送ります。
+- 専用キー・定型ボタンを送った後は、入力欄を新しい文章用にクリアします。送信記録は残ります。
 
-```powershell
-tailscale serve 8787
-```
+定型登録とテーマは接続先ごとのlocalStorageを使います。秘密情報は登録しないでください。PIN・認証トークン・入力履歴はlocalStorageに保存しません。別URL・別ブラウザ・Safariのサイトデータ消去では登録を引き継ぎません。保存できない場合は画面に表示します。
 
-このコマンドは前面で実行します。表示された **https://...ts.net** のURLを使います。Tailscale Serve用HTTPS証明書の有効化が求められる場合があります。
+## 安全性と制約
 
-**禁止**: `tailscale funnel`、ルーターのポート開放、受信プログラムを `0.0.0.0` に公開する変更。
+受信は `127.0.0.1:8787` のみ。PIN認証・セッションCookie・同一生成元チェック・入力開始停止・35秒の入力許可期限・送信IDの重複防止を使います。通信結果が不明な時は停止して同じIDで再確認できますが、PC側で一部だけ入力された場合などに完全な一度だけの実行は保証できません。
 
-### 3. iPhoneで文字入力
+入力した文章をサーバーでログ保存しません。PIN、端末情報、Tailnetアドレス、認証情報、個人の文章は公開Issue・コミットへ含めません。iPhone入力欄の途中編集、絵文字、Windowsアプリの削除単位、PC側のフォーカスやカーソル変更によって表示と実際の入力がずれることがあります。
 
-1. iPhoneでもTailscaleを接続し、PCと同じTailnetに参加します。
-2. SafariでPCに表示された **https://...ts.net** のURLを開きます。**github.ioの公開URLではありません。**
-3. PCの黒い画面の6桁PINを入力して「接続」を押します。
-4. PCでメモ帳を開き、文字を入力する場所をクリックします。
-5. iPhoneで「入力を開始」を押し、標準キーボードで入力します。英数字は入力ごと、日本語は変換確定後に送られます。
-6. 終わったら「入力を停止」。Windows側の受信プログラムとTailscale Serveも終了できます。
-
-入力先はPCで**現在フォーカスしているウィンドウ**です。PCの画面をiPhoneに転送する機能ではありません。PCのロック画面や管理者権限のアプリなどは操作対象外です。
-
-## 搭載機能
-
-- iPhone Safariの標準キーボードと日本語IME変換確定の検知
-- Unicode文字送信、Enter / Backspace / Tab / Escape
-- PINペアリング、セッションCookie、誤入力防止の開始・停止、35秒の入力許可タイムアウト
-- 同一イベントIDの再送時の重複抑止、送信成否が曖昧な場合の再確認UI
-- 受信は `127.0.0.1:8787` に限定、入力内容のディスク保存なし
-
-## 制約・注意
-
-- 本アプリでは**PCの画面や入力先の実際のテキストを取得できません**。スマホの入力欄はPCの内容と双方向同期されません。
-- 日本語変換や絵文字、Backspace、文字の選択・置換ではWindowsアプリとiPhoneの差によりズレる場合があります。
-- 通信失敗時に操作を再試行する設計ですが、PC側の部分入力やプロセス再起動では完全な「一度だけ」を保証できません。
-- PCのフォーカスが別アプリに移ると意図しない場所へ入力され得ます。パスワードなど秘密情報の入力には使わないでください。
-- ペアリングコード、Tailnetの接続URL、端末情報、秘密鍵、入力した文章をIssue・GitHubコミットへ貼らないでください。
-- v0.1はWindowsでの自動常駐と実機受入検証が未完了です。
-
-## 開発
-
-標準ライブラリのみでテストできます。
+## 検証
 
 ```sh
 python -m unittest discover -s tests -v
+node --check app.js
+node --test tests/test_browser.cjs
 ```
 
-コード: `remote_keys.py`（Windows受信・SendInput）, `index.html` / `style.css` / `app.js`（iPhone UI）, `start-windows.cmd`（Windows起動）。
+通信とデスクトップSTART/STOPの単体テスト、送信記録・定型登録・再試行・日本語確定・テーマのブラウザロジックをテストします。実機のWindows入力とiPhone IMEは別途確認が必要です。従来版でのiPhoneからの日本語入力はユーザーが成功確認済み。新しいUIとミニパネルのiPhone受入は別工程です。
 
-プロジェクト方針は [AGENTS.md](AGENTS.md)、今後の検証は [docs/ROADMAP.md](docs/ROADMAP.md) を参照してください。
+`pixel_cat.py` はWebとデスクトップで共通のコード製ドット絵から `cat.svg` / `cat.ico` を生成します。開発規則は [AGENTS.md](AGENTS.md) を参照してください。

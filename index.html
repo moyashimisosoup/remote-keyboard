@@ -12,11 +12,11 @@
 </head>
 <body>
   <main class="shell">
-    <header><div class="logomark">⌨</div><div><h1>Remote Keyboard</h1><p>iPhone → Windows</p></div><span id="badge" class="badge">接続確認中</span></header>
+    <header><div class="logomark"><img src="/cat.svg" alt="8bitのネコ" width="40" height="40"></div><div><h1>Remote Keyboard</h1><p>iPhone → Windows</p></div><span id="badge" class="badge">接続確認中</span></header><div class="theme-bar"><label for="theme">COLOR</label><select id="theme" aria-label="色のテーマ"><option value="mint">MINT</option><option value="night">NIGHT</option><option value="peach">PEACH</option><option value="gameboy">GAME BOY</option></select></div>
     <section class="panel" id="pairPanel" hidden>
       <p class="overline">PAIRING</p>
       <h2>PCと接続する</h2>
-      <p class="hint">PC側の黒い画面に表示された6桁のコードを入力します。</p>
+      <p class="hint">PCのミニパネルでSTARTを押し、表示された6桁のPINを入力します。</p>
       <form id="pairForm">
         <label for="pin">接続コード</label>
         <input id="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
@@ -24,11 +24,33 @@
       </form>
     </section>
     <section class="panel" id="keyboardPanel" hidden>
-      <div class="line"><div><p class="overline">INPUT</p><h2>文字を入力</h2></div><button id="toggle" type="button" class="primary compact">入力を開始</button></div>
-      <div class="editorwrap"><textarea id="editor" placeholder="タップしてiPhoneのキーボードで入力" maxlength="750" rows="6" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea></div>
-      <p class="hint">日本語は変換確定後に送信。文字入力先はWindowsで選択中のアプリです。</p>
-      <div class="keys"><button type="button" data-key="Enter">Enter ↵</button><button type="button" data-key="Backspace">削除 ⌫</button><button type="button" data-key="Tab">Tab ↹</button><button type="button" data-key="Escape">Esc</button></div>
-      <div class="bottom"><button type="button" id="clear" class="subtle">入力欄だけクリア</button><span id="count">0 / 750</span></div>
+      <div class="input-tools">
+        <div class="line"><div><p class="overline">INPUT</p><h2>文字を入力</h2></div><button id="toggle" type="button" class="primary compact">入力を開始</button></div>
+        <div class="clear-row"><button type="button" id="clear">入力欄だけクリア</button><span id="count">0 / 750</span></div>
+        <div class="keys"><button type="button" data-key="Enter">Enter ↵</button><button type="button" data-key="Backspace">PCで削除 ⌫</button><button type="button" data-key="Tab">Tab ↹</button><button type="button" data-key="Escape">Esc</button></div>
+      </div>
+      <div class="editorwrap"><textarea id="editor" placeholder="タップしてiPhoneのキーボードで入力" maxlength="750" rows="3" autocomplete="off" autocapitalize="sentences" spellcheck="true"></textarea></div>
+      <p class="hint input-hint">日本語は変換確定後に送信。入力欄の削除はPCにも送ります。</p>
+    </section>
+    <section class="panel" id="historyPanel" hidden>
+      <div class="line"><div><p class="overline">SENT</p><h2>送信記録</h2></div><button id="clearHistory" type="button" class="subtle">記録だけ消す</button></div>
+      <details><summary>最近の送信を表示</summary><p class="hint">送信成功した文字・キー操作の記録です。PCの現在の文章とは一致しない場合があります。ページを閉じると消えます。</p>
+      <ol id="sentHistory" class="history" aria-label="送信成功の記録"></ol>
+      <p id="historyEmpty" class="hint">まだ送信していません。</p></details>
+    </section>
+    <section class="panel" id="presetsPanel" hidden>
+      <p class="overline">QUICK INPUT</p><h2>定型文・キー登録</h2>
+      <div id="presetList" class="preset-list"></div>
+      <details><summary>新しく登録する</summary>
+        <form id="presetForm">
+          <label for="presetName">ボタンの名前</label><input id="presetName" maxlength="30" required placeholder="例：よく使うコマンド">
+          <label for="presetType">種類</label><select id="presetType"><option value="text">定型文・コマンド文字列</option><option value="key">キー入力</option></select>
+          <div id="presetTextWrap"><label for="presetText">送る文字（750文字まで）</label><textarea id="presetText" maxlength="750" rows="2" autocapitalize="off" spellcheck="false"></textarea></div>
+          <div id="presetKeyWrap" hidden><label for="presetKey">送るキー</label><select id="presetKey"><option value="Enter">Enter</option><option value="Backspace">Backspace（PCで削除）</option><option value="Tab">Tab</option><option value="Escape">Esc</option></select></div>
+          <button type="submit" class="primary">このブラウザに登録</button>
+        </form>
+      </details>
+      <p class="hint">登録内容はこのブラウザに保存します。秘密情報は登録しないでください。送信は「入力を開始」後にボタンを押した時だけ。Enterは自動追加しませんが、登録した改行はそのまま送信します。</p>
     </section>
     <div role="status" aria-live="polite" class="message" id="message">接続状態を確認しています…</div>
     <div id="retryWrap" class="retry" hidden><button type="button" id="retry" class="primary">同じ操作を安全に再送</button></div>

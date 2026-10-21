@@ -18,11 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check Python syntax
-        run: python -m py_compile remote_keys.py
+        run: python -m py_compile remote_keys.py desktop_app.py pixel_cat.py
       - name: Run protocol tests
         run: python -m unittest discover -s tests -v
       - name: Check browser JavaScript syntax
         run: node --check app.js
+      - name: Test browser input and presets
+        run: node --test tests/test_browser.cjs
       - name: Check essential files
         shell: bash
         run: test -s index.html && test -s style.css && test -s start-windows.cmd

@@ -248,6 +248,7 @@ def create_handler(state):
                 return self.reply(200, {'paired': paired, 'enabled': enabled})
             files = {'/': ('index.html', 'text/html; charset=utf-8'),
                      '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                     '/cat.svg': ('cat.svg', 'image/svg+xml'),
                      '/style.css': ('style.css', 'text/css; charset=utf-8')}
             if path not in files:
                 return self.reply(404, {'error': 'Not found.'})
