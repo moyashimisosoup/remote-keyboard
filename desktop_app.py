@@ -153,12 +153,21 @@ class PixelPIN:
                         self.canvas.create_rectangle(xx,yy,xx+scale-1,yy+scale-1,fill='#f7d18a',outline='')
 
 
+def connection_caption(status):
+    if not status['paired']:
+        return '未接続'
+    if not status['connected']:
+        return status['peer'] + ' 認証済み／応答待ち'
+    mode = '入力受信中' if status['receiving'] else '入力停止中'
+    return status['peer'] + 'と接続中／' + mode
+
+
 class MiniPanel:
     def __init__(self, root):
         global tk
         import tkinter as tk
         self.root=root; self.receiver=Receiver(); self.commands=queue.SimpleQueue(); self.tray=None
-        root.title('Remote Keyboard'); root.geometry('246x146'); root.resizable(False,False)
+        root.title('Remote Keyboard'); root.geometry('246x166'); root.resizable(False,False)
         root.overrideredirect(True)
         root.configure(bg='#202a29',highlightbackground='#779486',highlightthickness=2); root.attributes('-topmost',True)
         root.protocol('WM_DELETE_WINDOW',self.hide)
@@ -176,6 +185,8 @@ class MiniPanel:
         self.status.pack(side='left',padx=9)
         self.status.bind('<ButtonPress-1>',self.drag_begin); self.status.bind('<B1-Motion>',self.drag_move)
         tk.Button(header,text='×',command=self.hide,font=('Consolas',12),bg='#202a29',fg='#a6b8a5',relief='flat',borderwidth=0,padx=2,pady=0).pack(side='right')
+        self.connection=tk.Label(root,text='未接続',fg='#a6b8a5',bg='#202a29',font=('Yu Gothic UI',9),anchor='center')
+        self.connection.pack(fill='x',padx=6)
         self.pin=PixelPIN(root)
         buttons=tk.Frame(root,bg='#202a29'); buttons.pack(fill='x',padx=12,pady=(2,0))
         self.start_button=tk.Button(buttons,text='START',command=self.start,font=('Consolas',11,'bold'),
@@ -226,6 +237,7 @@ class MiniPanel:
     def stop(self):
         self.receiver.stop(); self.pin.show('------')
         self.status.configure(text='STOPPED',fg='#a6b8a5')
+        self.connection.configure(text='未接続',fg='#a6b8a5')
         self.start_button.configure(state='normal'); self.stop_button.configure(state='disabled')
         if self.tray: self.tray.update(False)
 
@@ -247,11 +259,10 @@ class MiniPanel:
             elif command=='restore_tray' and self.tray:
                 if not self.tray._add(): self.show()
         if self.receiver.running:
-            with self.receiver.state.lock:
-                import time
-                expired=time.monotonic()-self.receiver.state.pin_born > 30*60
-                typing=self.receiver.state.armed_until > time.monotonic()
-            self.status.configure(text='PIN EXPIRED' if expired else ('TYPING' if typing else 'READY'))
+            status=self.receiver.state.panel_status()
+            self.status.configure(text='PIN EXPIRED' if status['pin_expired'] else ('TYPING' if status['receiving'] else 'READY'))
+            self.connection.configure(text=connection_caption(status),
+                                      fg='#b7df9d' if status['receiving'] else '#a6b8a5')
         self.root.after(150,self.poll)
 
     def quit(self):
@@ -262,24 +273,39 @@ class MiniPanel:
 
 def main():
     import tkinter as tk
-    import os
-    mutex=None
-    if os.name=='nt':
-        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
-        kernel.CreateMutexW.argtypes=[ctypes.c_void_p,wt.BOOL,wt.LPCWSTR]
-        kernel.CreateMutexW.restype=wt.HANDLE
-        kernel.CloseHandle.argtypes=[wt.HANDLE]
-        mutex=kernel.CreateMutexW(None,False,'Local\\RemoteKeyboardMiniPanel')
-        if not mutex: raise ctypes.WinError(ctypes.get_last_error())
-        if ctypes.get_last_error()==183:
-            kernel.CloseHandle(mutex)
+    from tkinter import messagebox
+    from instance_guard import InstanceGuard
+    root = tk.Tk()
+    root.withdraw()
+    guard = InstanceGuard()
+    app = None
+    try:
+        def confirm_restart():
+            return messagebox.askyesno(
+                'Remote Keyboard - 再起動',
+                'すでに起動しています。既存の接続を終了して再起動しますか？\n\n'
+                '再起動後はSTOPPEDになります。STARTを押し、新しいPINで接続してください。',
+                parent=root, default='no')
+        if not guard.acquire(confirm_restart):
             return
-    root=tk.Tk()
-    app=MiniPanel(root)
-    try: root.mainloop()
+        app = MiniPanel(root)
+        root.deiconify()
+        def check_restart():
+            if guard.restart_requested():
+                app.quit()
+            else:
+                root.after(150, check_restart)
+        root.after(150, check_restart)
+        root.mainloop()
+    except Exception as error:
+        messagebox.showerror('Remote Keyboard', str(error), parent=root)
     finally:
-        app.receiver.stop()
-        if app.tray: app.tray.close()
-        if mutex: kernel.CloseHandle(mutex)
+        if app:
+            app.receiver.stop()
+            if app.tray: app.tray.close()
+        # Shutdown and invalidate input before allowing a replacement to start.
+        guard.close()
+        try: root.destroy()
+        except tk.TclError: pass
 
 if __name__=='__main__': main()
