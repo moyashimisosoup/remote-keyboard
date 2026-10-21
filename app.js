@@ -7,6 +7,34 @@ let paired = false, enabled = false, composing = false;
 let confirmed = '', pending = null, stopped = false, manualReview = false;
 let sequence = Promise.resolve();
 let quickSending = false;
+let settlingInput = false, inputTimer = null, inputSettled = Promise.resolve(), settleInput = null;
+function holdInputCommit() {
+  clearTimeout(inputTimer);
+  if (!settlingInput) {
+    settlingInput = true;
+    inputSettled = new Promise(resolve => { settleInput = resolve; });
+  }
+}
+function cancelInputCommit() {
+  clearTimeout(inputTimer);
+  settlingInput = false; composing = false;
+  const done = settleInput; settleInput = null;
+  if (done) done();
+}
+function scheduleInputFlush() {
+  holdInputCommit();
+  // Coalesce compositionend and Safari's following final input update.
+  inputTimer = setTimeout(() => {
+    if (composing) return;
+    settlingInput = false;
+    const done = settleInput; settleInput = null;
+    if (done) done();
+    queueFlush();
+  }, 80);
+}
+async function waitForInputCommit() {
+  while (settlingInput) await inputSettled;
+}
 const sentRecords = [];
 const PRESET_STORAGE = 'remote-keyboard.presets.v1';
 const allowedKeys = ['Enter', 'Backspace', 'Tab', 'Escape'];
@@ -35,8 +63,8 @@ function recordAccepted(packet) {
     if (packet.erase) sentRecords.push({kind:'operation', value:'PCで削除 × ' + packet.erase});
     if (packet.text) {
       const last = sentRecords[sentRecords.length - 1];
-      if (last && last.kind === 'text' && last.value.length + packet.text.length <= 3000) last.value += packet.text;
-      else sentRecords.push({kind:'text', value:packet.text});
+      if (!packet.standalone && last && last.kind === 'text' && last.value.length + packet.text.length <= 3000) last.value += packet.text;
+      else sentRecords.push({kind:packet.standalone ? 'preset' : 'text', value:packet.text});
     }
     if (typeof packet.target === 'string') confirmed = packet.target;
   } else {
@@ -89,15 +117,24 @@ function sendQuick(preset) {
     if (!enabled || composing || stopped || !paired) return;
     quickSending = true; paint();
     try {
-      do {
+      await waitForInputCommit();
+      if (!enabled || stopped || !paired || composing) return;
+      if (preset.type === 'text' && (pending || editor.value !== confirmed)) {
+        info('入力欄の文章が送信完了してから、定型文をもう一度押してください。定型文は単独で送ります。', true);
+        return;
+      }
+      if (preset.type === 'key') do {
+        await waitForInputCommit();
+        if (!enabled || stopped || !paired || composing) return;
         await flush();
         if (pending || !enabled || stopped || composing) return;
       } while (editor.value !== confirmed);
       const request = preset.type === 'key'
         ? {id:randomId(), action:'key', key:preset.value, resetEditor:true, resetBase:editor.value}
-        : {id:randomId(), action:'edit', erase:0, text:preset.value, resetEditor:true, resetBase:editor.value};
+        : {id:randomId(), action:'edit', erase:0, text:preset.value, standalone:true, resetEditor:true, resetBase:editor.value};
       pending = request;
       await api('/api/input', request);
+      await waitForInputCommit();
       recordAccepted(request); pending = null;
       if (!stopped) info('送信しました。続けて新しい文章を入力できます。');
     } finally { quickSending = false; paint(); }
@@ -166,7 +203,7 @@ function difference(before, after) {
   return {erase:b.length-prefix, text:a.slice(prefix).join('')};
 }
 async function flush() {
-  if (composing || !enabled || stopped || !paired) return;
+  if (composing || settlingInput || !enabled || stopped || !paired) return;
   if (!pending && editor.value !== confirmed) {
     const target = editor.value;
     pending = {id:randomId(), action:'edit', ...difference(confirmed, target), target};
@@ -186,6 +223,7 @@ async function refresh() {
     const previous = paired;
     paired = data.paired;
     enabled = data.enabled;
+    if (!paired || !enabled) cancelInputCommit();
     if (!paired && previous) {
       if (pending) {
         stopped = true; manualReview = true;
@@ -198,7 +236,7 @@ async function refresh() {
     if (!previous && paired) info('接続しました。入力を開始してください。');
     paint();
   } catch (e) {
-    enabled = false;
+    enabled = false; cancelInputCommit();
     info('PCと通信できません。Tailscaleと受信アプリを確認してください。', true);
     paint();
   }
@@ -217,7 +255,7 @@ $('pairForm').addEventListener('submit', async e => {
 toggle.addEventListener('click', async () => {
   try {
     if (enabled) {
-      enabled = false;
+      enabled = false; cancelInputCommit();
       paint();
       await api('/api/control', {enabled:false});
       info('入力を停止しました。');
@@ -235,18 +273,17 @@ toggle.addEventListener('click', async () => {
     }
   } catch (err) { info(err.message, true); await refresh(); }
 });
-editor.addEventListener('compositionstart', () => { composing = true; paint(); });
+editor.addEventListener('compositionstart', () => { composing = true; holdInputCommit(); paint(); });
 editor.addEventListener('compositionend', () => {
   composing = false; paint();
-  // iOS Safari may send the final input event just after compositionend.
-  setTimeout(queueFlush, 55);
+  scheduleInputFlush();
 });
 editor.addEventListener('input', ev => {
   $('count').textContent = Array.from(editor.value).length + ' / 750';
-  if (!composing && !ev.isComposing) queueFlush();
+  if (!composing && !ev.isComposing) scheduleInputFlush();
 });
 $('clear').addEventListener('click', () => {
-  if (composing || quickSending || pending || stopped || editor.value !== confirmed) {
+  if (composing || settlingInput || quickSending || pending || stopped || editor.value !== confirmed) {
     info('変換・送信が完了してから入力欄をクリアしてください。', true); return;
   }
   editor.value = ''; confirmed = '';

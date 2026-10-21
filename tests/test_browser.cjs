@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 function harness() {
-  const elements = new Map(), timers = [], packets = [], store = new Map();
+  const elements = new Map(), timers = new Map(), packets = [], store = new Map();
+  let timerId = 0;
   function element() {
     return {value:'', textContent:'', hidden:false, disabled:false, dataset:{}, children:[],
       classList:{toggle(){}}, listeners:{},
@@ -29,7 +30,7 @@ function harness() {
       }},
     localStorage:{getItem:key=>store.get(key) || null, setItem:(key,value)=>store.set(key,value)},
     crypto:require('node:crypto').webcrypto, Uint8Array,
-    setInterval(){}, setTimeout:fn=>timers.push(fn),
+    setInterval(){}, setTimeout:fn=>{const id=++timerId; timers.set(id,fn); return id;}, clearTimeout:id=>timers.delete(id),
     async fetch(url, opts) {
       if (url === '/api/status') return {ok:true, json:async()=>({paired:true, enabled:state.enabled})};
       const body=JSON.parse(opts.body);
@@ -44,9 +45,10 @@ function harness() {
   });
   vm.runInContext(source, context);
   const settle = async()=>{for(let i=0;i<10;i++) await Promise.resolve();};
-  return {get,keys,state,timers,packets,store,settle,viewport,root,
+  const runTimers = async()=>{for (const [id,fn] of [...timers]) { if (!timers.has(id)) continue; timers.delete(id); fn(); await settle(); } await settle();};
+  return {get,keys,state,timers,packets,store,settle,viewport,root,runTimers,
     run:code=>vm.runInContext(code,context),
-    async fire(id, event, data={}) { await get(id).listeners[event]({preventDefault(){},...data}); await settle(); }};
+    async fire(id, event, data={}, drain=true) { const result=get(id).listeners[event]({preventDefault(){},...data}); await settle(); if(drain) await runTimers(); await result; await settle(); }};
 }
 test('only acknowledged text enters history; clearing history never sends a key', async()=>{
   const h=harness(); await h.settle();
@@ -96,7 +98,7 @@ test('Japanese composition waits for confirmation; clear cannot discard in-fligh
   await h.fire('editor','input',{isComposing:true}); assert.equal(h.packets.length,0);
   await h.fire('clear','click'); assert.equal(h.get('editor').value,'きょう');
   h.get('editor').value='今日'; await h.fire('editor','compositionend');
-  for(const fn of h.timers) await fn(); await h.settle();
+  await h.runTimers();
   assert.equal(h.packets.length,1); assert.equal(h.packets[0].text,'今日');
 });
 test('quick actions preserve keyboard focus and serialize preceding input', async()=>{
@@ -129,4 +131,88 @@ test('characters typed during a quick-action reply remain queued after the actio
   assert.equal(h.get('editor').value,'つづき');
   assert.equal(h.packets.at(-1).text,'つづき');
   assert.equal(h.packets.at(-1).erase,0);
+});
+
+test('Enter waits for the trailing committed input after compositionend', async()=>{
+  const h=harness(); await h.settle();
+  await h.fire('editor','compositionstart');
+  h.get('editor').value='きょう'; await h.fire('editor','input',{isComposing:true});
+  await h.fire('editor','compositionend',{},false);
+  const sending=h.keys[0].listeners.click(); await h.settle();
+  h.get('editor').value='今日'; await h.fire('editor','input',{inputType:'insertFromComposition'},false);
+  await h.runTimers(); await sending; await h.settle();
+  assert.equal(h.packets.length,2);
+  assert.equal(h.packets[0].text,'今日');
+  assert.equal(h.packets[1].key,'Enter');
+});
+test('each preset click is one independent packet and one independent history item', async()=>{
+  const h=harness(); await h.settle();
+  h.get('presetName').value='あいさつ'; h.get('presetType').value='text'; h.get('presetText').value='ありがとう';
+  await h.fire('presetForm','submit');
+  const button=h.get('presetList').children[0];
+  await button.listeners.click(); await h.settle();
+  await button.listeners.click(); await h.settle();
+  assert.equal(h.packets.length,2);
+  assert.notEqual(h.packets[0].id,h.packets[1].id);
+  assert.ok(h.packets.every(p=>p.text==='ありがとう' && p.erase===0 && p.action==='edit'));
+  assert.equal(h.get('sentHistory').children.length,2);
+  h.get('editor').value='次'; await h.fire('editor','input');
+  assert.equal(h.get('sentHistory').children.length,3);
+});
+test('a preset never flushes an unconfirmed editor draft as a side effect', async()=>{
+  const h=harness(); await h.settle();
+  h.get('editor').value='未送信';
+  await h.run("sendQuick({type:'text',name:'定型',value:'単発'})");
+  assert.equal(h.packets.length,0);
+  assert.equal(h.get('editor').value,'未送信');
+});
+
+test('Enter waits again if new input arrives while the preceding flush is in flight', {timeout:1000}, async()=>{
+  const h=harness(); await h.settle();
+  h.get('editor').value='先行';
+  let release; h.state.hold=new Promise(resolve=>release=resolve);
+  const sending=h.keys[0].listeners.click(); await h.settle();
+  h.get('editor').value='先行追加'; await h.fire('editor','input',{},false);
+  release(); await h.settle();
+  await h.runTimers(); await sending; await h.settle();
+  assert.equal(h.packets.at(-1).key,'Enter');
+  assert.equal(h.packets[1].text,'追加');
+});
+test('a following IME commit is preserved when a quick-key reply arrives during composition', {timeout:1000}, async()=>{
+  const h=harness(); await h.settle();
+  h.get('editor').value='前'; await h.fire('editor','input');
+  let release; h.state.hold=new Promise(resolve=>release=resolve);
+  const sending=h.keys[0].listeners.click(); await h.settle();
+  await h.fire('editor','compositionstart'); h.get('editor').value='前きょう';
+  release(); await h.settle();
+  assert.equal(h.get('editor').value,'前きょう');
+  h.get('editor').value='前今日'; await h.fire('editor','compositionend',{},false);
+  await h.runTimers(); await sending; await h.settle();
+  assert.equal(h.get('editor').value,'今日');
+  assert.equal(h.packets.at(-1).text,'今日');
+  assert.equal(h.packets.at(-1).erase,0);
+});
+
+test('ordinary typing coalesces the trailing IME commit without pressing any shortcut', async()=>{
+  const h=harness(); await h.settle();
+  await h.fire('editor','compositionstart');
+  h.get('editor').value='きょう'; await h.fire('editor','input',{isComposing:true});
+  await h.fire('editor','compositionend',{},false);
+  await h.fire('editor','input',{isComposing:false},false);
+  h.get('editor').value='今日';
+  await h.fire('editor','input',{isComposing:false,inputType:'insertFromComposition'},false);
+  await h.runTimers(); await h.settle();
+  assert.equal(h.packets.length,1);
+  assert.equal(h.packets[0].text,'今日');
+  assert.equal(h.packets[0].erase,0);
+});
+
+test('Stop cancels an Enter waiting for the final IME update without sending it', {timeout:1000}, async()=>{
+  const h=harness(); await h.settle();
+  await h.fire('editor','compositionstart'); h.get('editor').value='きょう';
+  await h.fire('editor','compositionend',{},false);
+  const sending=h.keys[0].listeners.click(); await h.settle();
+  await h.fire('toggle','click'); await sending;
+  assert.equal(h.packets.length,0);
+  assert.equal(h.state.enabled,false);
 });
