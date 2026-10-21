@@ -1,0 +1,2 @@
+# remote-keyboard
+iPhone Safariの標準キーボードで確定した文字をTailscale経由でWindowsへ送る軽量Webアプリ
